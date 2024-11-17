@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net5.0</TargetFramework>
+    <Description>Allows tasks (on separate threads) to acquire locks with a function call instead of creating a block of code. Locks are released when the task finishes. Detects and resolves deadlocks. Tasks are encouraged to organize their code into a starting segment that gets all locks required for the task, then verify the task is still valid in the current program state, then finally execute the task if still valid.
+Designed for a usecase of servers with several client threads running simultaneously, and no clear heirarchy for locks. This allows developers to get locks in a convenient manner, while staying performant and safe in a multi-threaded application.</Description>
+    <Copyright>Kejardon 2024</Copyright>
+  </PropertyGroup>
+
+</Project>

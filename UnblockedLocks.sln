@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30717.126
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "UnblockedLocks", "UnblockedLocks.csproj", "{5E57C2E2-23F4-4ECC-B118-F935B939B896}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5E57C2E2-23F4-4ECC-B118-F935B939B896}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E57C2E2-23F4-4ECC-B118-F935B939B896}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E57C2E2-23F4-4ECC-B118-F935B939B896}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E57C2E2-23F4-4ECC-B118-F935B939B896}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {23F91B06-FB7C-4F5D-BB0C-CC94BC65E1AA}
+	EndGlobalSection
+EndGlobal
