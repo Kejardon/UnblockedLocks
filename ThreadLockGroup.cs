@@ -52,6 +52,13 @@ namespace KejUtils.UnblockedLocks
         internal ThreadLockGroup waitingOn;
         #endregion
         /// <summary>
+        /// The ThreadLockGroup to return control to when this ThreadLockGroup is done.
+        /// This group will also have control of all the parent's locks while it is running, and leave the CurrentLock
+        /// of those ILockables alone. Newly added locks will be assigned to this ThreadLockGroup. Interruptions and similar
+        /// things will still treat this group and the previous group as part of the same stack of tasks.
+        /// </summary>
+        internal ThreadLockGroup previousLockGroup;
+        /// <summary>
         /// Flag for if this group has been interrupted during the current LockResource call.
         /// This is only set while waitingOn is set, and only checked when waitingOn is null, so it does not directly need
         /// a lock to work correctly between threads
@@ -62,7 +69,13 @@ namespace KejUtils.UnblockedLocks
         /// -1 if not set yet, otherwise will only be set once and never modified again later.
         /// Lower numbers = higher priority.
         /// </summary>
-        internal volatile int subSubPriority = -1;
+        internal volatile int subSubPriorityValue = -1;
+        internal int subSubPriority { get {
+                if (previousLockGroup != null) return previousLockGroup.subSubPriority;
+                return subSubPriorityValue; } set {
+                if (previousLockGroup != null) previousLockGroup.subSubPriority = value;
+                else subSubPriorityValue = value; ;
+            } }
         /// <summary>
         /// List of groups that are currently using locks from this group.
         /// </summary>
@@ -92,6 +105,8 @@ namespace KejUtils.UnblockedLocks
                     if (nextGroup.Contains(other)) return true;
                 }
             }
+            if (previousLockGroup != null)
+                return previousLockGroup.Contains(other);
             return false;
         }
 
@@ -161,6 +176,13 @@ namespace KejUtils.UnblockedLocks
                     LockHolderHelper otherTask = taskQueue[i];
                     if (highestPriority.ComparePriority(otherTask) < 0)
                         highestPriority = otherTask;
+                }
+                if (previousLockGroup != null)
+                {
+                    LockHolderHelper previousHighest = previousLockGroup.HighestPriority(previousLockGroup.taskQueue.Count);
+                    if (previousHighest == null) return null; //Some really screwy race condition must have happened for *this* to be null, but it's possible.
+                    if (highestPriority.ComparePriority(previousHighest) < 0)
+                        highestPriority = previousHighest;
                 }
                 if (taskQueue.Count != maxSize)
                     return null;
@@ -483,7 +505,11 @@ namespace KejUtils.UnblockedLocks
                 taskQueue.RemoveAt(taskQueue.Count - 1);
                 if (taskQueue.Count == 0)
                 {
-                    ThreadLockGroup.CurrentLockGroup = null;
+                    ThreadLockGroup.CurrentLockGroup = previousLockGroup;
+                    if (previousLockGroup != null)
+                    {
+                        previousLockGroup.waitingOn = null;
+                    }
                     Monitor.PulseAll(statusMutex);
                     //Maybe TODO: Other memory freeing things? Since there may be stale references to LockableLockGroups
                     //it might be nice if expired LockableLockGroups didn't take much memory.

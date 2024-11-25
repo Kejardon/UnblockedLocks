@@ -135,12 +135,14 @@ namespace KejUtils.UnblockedLocks
         /// during getLocks.</param>
         /// <param name="dynamicLocks">True if changes to the program state may affect getLocks. False if getLocks will always
         /// get the same locks regardless of program state.</param>
+        /// <param name="forceNewLockgroup">True to make new locks use a new lockgroup, so the new locks can be released quicker.
+        /// False to let an old lockgroup (if one exists) be reused, to simplify and reduce overhead caused by lock contention.</param>
 
-        public static bool LockThenRun(this ILockHolder holder, Action<GetLocksStruct> getLocks, Action useLocks, bool getLockReturnOnDeadlock = false, bool dynamicLocks = true)
+        public static bool LockThenRun(this ILockHolder holder, Action<GetLocksStruct> getLocks, Action useLocks, bool getLockReturnOnDeadlock = false, bool dynamicLocks = true, bool forceNewLockgroup = false)
         {
             if (holder == null) throw new NullReferenceException();
 
-            LockHolderHelper lockableLock = InitLockGroup(holder);
+            LockHolderHelper lockableLock = InitLockGroup(holder, forceNewLockgroup);
             lockableLock.ReturnOnDeadlock = getLockReturnOnDeadlock;
 
             try
@@ -167,12 +169,14 @@ namespace KejUtils.UnblockedLocks
         /// Enables calling ILockHolder.GetLocks and ILockHolder.GetSingleLock inside of the using block.
         /// </summary>
         /// <param name="lockHolder">ILockHolder to manage the task.</param>
+        /// <param name="forceNewLockgroup">True to make new locks use a new lockgroup, so the new locks can be released quicker.
+        /// False to let an old lockgroup (if one exists) be reused, to simplify and reduce overhead caused by lock contention.</param>
         /// <returns>Using to dispose of to indicate the locks are no longer in use.</returns>
-        public static IDisposable StartLockBlock(this ILockHolder lockHolder)
+        public static IDisposable StartLockBlock(this ILockHolder lockHolder, bool forceNewLockgroup = false)
         {
             if (lockHolder == null) throw new NullReferenceException();
 
-            LockHolderHelper lockableLock = InitLockGroup(lockHolder);
+            LockHolderHelper lockableLock = InitLockGroup(lockHolder, forceNewLockgroup);
 
             return lockableLock;
         }
@@ -254,17 +258,15 @@ namespace KejUtils.UnblockedLocks
             return anyInterrupts;
         }
 
-        private static LockHolderHelper InitLockGroup(ILockHolder holder)
+        private static LockHolderHelper InitLockGroup(ILockHolder holder, bool forceNewLockgroup)
         {
             LockHolderHelper lockableLock;
-            //PERFORMANCE TODO: Add an option to force a new CurrentLockGroup, use old one as a parent.
-            //Set parent lockgroup as waiting on new one, add parent one as owned subgroup in new one, restore parent at ThreadLockGroup.DisposeOf
-            //This may improve concurrency if it is reasonable to consider it as a distinct group of locks.
 
             //Check if this is a subsequent task in a single thread
-            if (ThreadLockGroup.CurrentLockGroup != null)
+            ThreadLockGroup currentLockGroup = ThreadLockGroup.CurrentLockGroup;
+            if (!forceNewLockgroup && currentLockGroup != null)
             {
-                ThreadLockGroup currentLockGroup = ThreadLockGroup.CurrentLockGroup;
+                //Reuse currentLockGroup
                 lock (currentLockGroup.statusMutex)
                 {
                     lockableLock = currentLockGroup.AddTask(holder);
@@ -272,11 +274,22 @@ namespace KejUtils.UnblockedLocks
             }
             else
             {
-                ThreadLockGroup currentLockGroup = new ThreadLockGroup();
+                //Create a new lock group
+                ThreadLockGroup newLockGroup = new ThreadLockGroup();
 
-                ThreadLockGroup.CurrentLockGroup = currentLockGroup;
+                ThreadLockGroup.CurrentLockGroup = newLockGroup;
 
-                lockableLock = currentLockGroup.AddTask(holder);
+                lockableLock = newLockGroup.AddTask(holder);
+                if (currentLockGroup != null)
+                {
+                    //Return to previous ThreadLockGroup when new one is finished.
+                    newLockGroup.previousLockGroup = currentLockGroup;
+
+                    lock (currentLockGroup.statusMutex)
+                    {
+                        currentLockGroup.waitingOn = newLockGroup;
+                    }
+                }
             }
             return lockableLock;
         }
