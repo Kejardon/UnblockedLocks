@@ -94,6 +94,8 @@ namespace KejUtils.UnblockedLocks
             {
                 return true;
             }
+            if (previousLockGroup != null && previousLockGroup.Contains(other))
+                return true;
             foreach (LockHolderHelper nextTask in this.taskQueue)
             {
                 if (nextTask.ownedSubgroups == null)
@@ -102,11 +104,16 @@ namespace KejUtils.UnblockedLocks
                 }
                 foreach (ThreadLockGroup nextGroup in nextTask.ownedSubgroups)
                 {
+                    //TODO: This should instead be checking nextTask.ownedSubgroups and the other groups that also grabbed them
+                    //(nextTask.ownedSubgroups[i].groupsBorrowingThisGroup), not recursing Contains(), because we've had
+                    //to notify the other groupsBorrowingThisGroup already because they co-owned the locks we've already grabbed.
+                    //Fixing this might best be done by more thoroughly adding things to ownedSubgroups though, instead of a recursive call here.
+                    //
+                    //We have not necessarily asked for any of the locks in nextTask.ownedSubgroups[i].taskQueue[j].ownedSubgroups yet,
+                    //nor necessarily notified any of those subgroups that we are interrupting them.
                     if (nextGroup.Contains(other)) return true;
                 }
             }
-            if (previousLockGroup != null)
-                return previousLockGroup.Contains(other);
             return false;
         }
 
@@ -134,6 +141,8 @@ namespace KejUtils.UnblockedLocks
             //Tell the most recent owner (before ourselves) that we're interrupting it
             //DONE now: On second thought, makes more sense to notify all threads we're interrupting. Only the most recent
             //task of each thread really needs to be notified.
+            //TODO: On third thought, this isn't notifying all threads yet. This should be recursive and notifying all of 
+            //groupToNotify.groupsBorrowingThisGroup also.
             if (currentTask.notifiedTasks == null)
             {
                 currentTask.notifiedTasks = new List<LockHolderHelper>();
@@ -144,20 +153,16 @@ namespace KejUtils.UnblockedLocks
                 ThreadLockGroup groupToNotify = newSubgroup.groupsBorrowingThisGroup[groupToNotifyIndex];
                 otherTask = groupToNotify.taskQueue[^1];
                 currentTask.notifiedTasks.Add(otherTask);
-                //Possible small future optimization, but unlikely because it gets a little complicated and changes behavior:
-                //Maybe delay notifying if current task is in its first GetLocks call, until it reaches UseLocks.
                 otherTask.IgnoreInterrupt = false;
-                currentTask.holder.InterruptOtherTask(new InterruptStruct(currentTask, otherTask.holder, false));
-                otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, currentTask.holder, false));
+                currentTask.holder.InterruptOtherTask(new InterruptStruct(currentTask, otherTask, otherTask.holder, false));
+                otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, otherTask, currentTask.holder, false));
                 if (!otherTask.IgnoreInterrupt) otherTask.group.wasInterrupted = true;
             }
             otherTask = newSubgroup.taskQueue[^1];
             currentTask.notifiedTasks.Add(otherTask);
-            //Possible small future optimization, but unlikely because it gets a little complicated and changes behavior:
-            //Maybe delay notifying if current task is in its first GetLocks call, until it reaches UseLocks.
             otherTask.IgnoreInterrupt = false;
-            currentTask.holder.InterruptOtherTask(new InterruptStruct(currentTask, otherTask.holder, false));
-            otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, currentTask.holder, false));
+            currentTask.holder.InterruptOtherTask(new InterruptStruct(currentTask, otherTask, otherTask.holder, false));
+            otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, otherTask, currentTask.holder, false));
             if (!otherTask.IgnoreInterrupt) otherTask.group.wasInterrupted = true;
         }
 
@@ -494,8 +499,8 @@ namespace KejUtils.UnblockedLocks
                         ILockHolder otherHolder = otherGroup.holder;
                         //Tell the next owner of the lock we're done interrupting it
                         otherGroup.IgnoreInterrupt = false;
-                        oldLock.holder.InterruptOtherTask(new InterruptStruct(oldLock, otherHolder, true));
-                        otherHolder.InterruptedByTask(new InterruptStruct(otherGroup, oldLock.holder, true));
+                        oldLock.holder.InterruptOtherTask(new InterruptStruct(oldLock, otherGroup, otherHolder, true));
+                        otherHolder.InterruptedByTask(new InterruptStruct(otherGroup, otherGroup, oldLock.holder, true));
                         if (!otherGroup.IgnoreInterrupt) otherGroup.group.wasInterrupted = true;
                     }
                 }

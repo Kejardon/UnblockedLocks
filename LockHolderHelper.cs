@@ -50,12 +50,11 @@ namespace KejUtils.UnblockedLocks
         /// </summary>
         internal bool ReturnOnDeadlock = false;
         /// <summary>
-        /// Currently only important during GetLocks.
         /// If this is left as false for the interrupted lock during both InterruptOtherTask and InterruptedByTask,
         /// the interrupted lock will be marked as interrupted and respond according to ReturnOnDeadlock (or the
         /// equivalent bool argument) when it next gets priority. If every call to both InterruptOtherTask or
         /// InterruptedByTask sets this true for the interrupted lock, the interrupted lock will finish the LockResource
-        /// call with control of the resource.
+        /// call with control of the resource (when it eventually gets the lock).
         /// </summary>
         internal bool IgnoreInterrupt = false;
 

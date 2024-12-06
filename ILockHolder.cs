@@ -42,13 +42,15 @@ namespace KejUtils.UnblockedLocks
     /// </summary>
     public struct InterruptStruct
     {
-        internal InterruptStruct(LockHolderHelper myLock, ILockHolder otherHolder, bool finishedUseLocks)
+        internal InterruptStruct(LockHolderHelper myLock, LockHolderHelper interruptedLock, ILockHolder otherHolder, bool finishedUseLocks)
         {
-            lockableLock = myLock;
+            OwnLockHelper = myLock;
+            InterruptedLockHelper = interruptedLock;
             OtherHolder = otherHolder;
             FinishedUseLocks = finishedUseLocks;
         }
-        internal LockHolderHelper lockableLock;
+        internal LockHolderHelper OwnLockHelper;
+        internal LockHolderHelper InterruptedLockHelper;
         /// <summary>
         /// The other task.
         /// </summary>
@@ -63,7 +65,17 @@ namespace KejUtils.UnblockedLocks
         /// Set during this task's LockThenRun's getLocks to quit instead of calling useLocks. This has no effect outside
         /// of that window.
         /// </summary>
-        public bool Cancel { get { return lockableLock.Cancel; } set { lockableLock.Cancel = value; } }
+        public bool Cancel { get { return OwnLockHelper.Cancel; } set { OwnLockHelper.Cancel = value; } }
+
+        /// <summary>
+        /// If this is set to true, the interrupted task will not restart nor return failure because of this interruption.
+        /// Either the interrupting or interrupted task may modify this, they share the same variable. Must be set to true
+        /// both times (start of interruption when FinishedUseLocks is false, end of interruption when FinishedUseLocks is
+        /// true) to ignore the interruption.
+        /// Only affects the current interruption - Other interruptions (before or after) that did not set this variable
+        /// to true may still require a restart or return.
+        /// </summary>
+        public bool IgnoreInterruption { get { return InterruptedLockHelper.IgnoreInterrupt; } set { InterruptedLockHelper.IgnoreInterrupt = value; } }
     }
 
     /// <summary>
@@ -234,9 +246,6 @@ namespace KejUtils.UnblockedLocks
             return lockStruct.LockResource(resource, returnOnDeadlock);
         }
 
-        //maybe TODO: A timeout on LockThenRun *could* work, as long as it was only used for GetLocks and there wasn't
-        //a previous task. Would allow a new anomolous state though, where an expired group has locks being borrowed
-        //by a higher priority group.
 
         private static bool GetLocksInternal(Action<GetLocksStruct> getLocks, GetLocksStruct lockableLock)
         {
@@ -284,6 +293,14 @@ namespace KejUtils.UnblockedLocks
                 {
                     //Return to previous ThreadLockGroup when new one is finished.
                     newLockGroup.previousLockGroup = currentLockGroup;
+
+                    //TODO ish:
+                    //newLockGroup should have access to all locks owned by currentLockGroup but not notify currentLockGroup (done already, should ensure it stays that way).
+                    //if currentLockGroup is directly interrupted
+                    //  it should not be notified of interruptions (should recursively go to newLockGroup instead. Not done yet).
+                    //  all locks up the chain should be granted (Not done yet, semi-planned to be done while fixing a different bug).
+                    //if newLockGroup is interrupted
+                    //  currentLockGroup's locks should be granted anyways (already works this way but I think that's a bug that should be fixed in most cases other than this one).
 
                     lock (currentLockGroup.statusMutex)
                     {
