@@ -15,6 +15,7 @@ namespace KejUtils.UnblockedLocks
         /// Comparisons should generally work as IComparable's contract; if this has higher priority it should return
         /// a positive number. If the other lockholder has higher priority, this should return a negative number.
         /// If both are equivalent or a different comparison is needed, this should return 0.
+        /// Race conditions may occur if this does not give a consistent, transitive result.
         /// </summary>
         int CompareLockPriority(ILockHolder other);
 
@@ -101,7 +102,8 @@ namespace KejUtils.UnblockedLocks
             NewLock, //The object was previously not locked (or the previous lock has completely finished)
             OldLock, //The object was already locked by this thread
             TransferredLock, //The object is locked by another thread in a deadlock, but this thread has the highest priority and can use it now
-            FailedToGetLock, //The object is locked by another thread in a deadlock, and another thread had higher priority causing this thread to get interrupted. Only used when ReturnOnDeadlock is true.
+            FailedToGetLock, //The object is locked by another thread in a deadlock, and another thread had higher priority causing this thread to get interrupted before it ever got the lock. Only used when ReturnOnDeadlock is true.
+            TransferredLockAfterInterruption, //The object is locked by another thread in a deadlock, and another thread had higher priority causing this thread to get interrupted, but this thread did eventually get the lock. Only used when ReturnOnDeadlock is true.
         }
 
         /// <summary>
@@ -293,6 +295,7 @@ namespace KejUtils.UnblockedLocks
                 {
                     //Return to previous ThreadLockGroup when new one is finished.
                     newLockGroup.previousLockGroup = currentLockGroup;
+                    currentLockGroup.nextLockGroup = newLockGroup;
 
                     //TODO ish:
                     //newLockGroup should have access to all locks owned by currentLockGroup but not notify currentLockGroup (done already, should ensure it stays that way).

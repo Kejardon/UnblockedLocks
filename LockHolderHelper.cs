@@ -28,6 +28,9 @@ namespace KejUtils.UnblockedLocks
         private readonly DateTime subPriority;
         /// <summary>
         /// List of subgroups that this task has taken the lock for.
+        /// NOTE: I'm considering turning this into a set instead of a list. It's not expected to get big often,
+        /// but if it does, getting more locks may iterate over this a lot for Contains() calls. I don't feel like it
+        /// would get big often enough to be worth that though.
         /// </summary>
         internal List<ThreadLockGroup> ownedSubgroups;
         /// <summary>

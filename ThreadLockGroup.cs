@@ -59,6 +59,13 @@ namespace KejUtils.UnblockedLocks
         /// </summary>
         internal ThreadLockGroup previousLockGroup;
         /// <summary>
+        /// Usually null. If it's not, then this ThreadLockGroup has passed control to a child ThreadLockGroup, which should
+        /// be notified instead of this one of interruptions.
+        /// There's maybe a smarter way to do this so this variable isn't needed and it still works efficiently, but for
+        /// now adding this to make it easier to track which groups to notify.
+        /// </summary>
+        internal ThreadLockGroup nextLockGroup;
+        /// <summary>
         /// Flag for if this group has been interrupted during the current LockResource call.
         /// This is only set while waitingOn is set, and only checked when waitingOn is null, so it does not directly need
         /// a lock to work correctly between threads
@@ -88,13 +95,13 @@ namespace KejUtils.UnblockedLocks
         /// <param name="other"></param>
         /// <param name="recursive">True if subgroups of subgroups should be searched</param>
         /// <returns></returns>
-        private bool Contains(ThreadLockGroup other)
+        private bool ContainsLocksOf(ThreadLockGroup other)
         {
             if (other == this)
             {
                 return true;
             }
-            if (previousLockGroup != null && previousLockGroup.Contains(other))
+            if (previousLockGroup != null && previousLockGroup.ContainsLocksOf(other))
                 return true;
             foreach (LockHolderHelper nextTask in this.taskQueue)
             {
@@ -102,20 +109,20 @@ namespace KejUtils.UnblockedLocks
                 {
                     continue;
                 }
-                foreach (ThreadLockGroup nextGroup in nextTask.ownedSubgroups)
-                {
-                    //TODO: This should instead be checking nextTask.ownedSubgroups and the other groups that also grabbed them
-                    //(nextTask.ownedSubgroups[i].groupsBorrowingThisGroup), not recursing Contains(), because we've had
-                    //to notify the other groupsBorrowingThisGroup already because they co-owned the locks we've already grabbed.
-                    //Fixing this might best be done by more thoroughly adding things to ownedSubgroups though, instead of a recursive call here.
-                    //
-                    //We have not necessarily asked for any of the locks in nextTask.ownedSubgroups[i].taskQueue[j].ownedSubgroups yet,
-                    //nor necessarily notified any of those subgroups that we are interrupting them.
-                    if (nextGroup.Contains(other)) return true;
-                }
+                if (nextTask.ownedSubgroups.Contains(other))
+                    return true;
             }
             return false;
         }
+        private bool ContainsThreadGroup(ThreadLockGroup other)
+        {
+            if (other == this)
+                return true;
+            if (previousLockGroup != null && previousLockGroup.ContainsThreadGroup(other))
+                return true;
+            return false;
+        }
+
 
         /// <summary>
         /// Make sure a task contains a subgroup. Does nothing if it already does.
@@ -123,6 +130,7 @@ namespace KejUtils.UnblockedLocks
         /// </summary>
         /// <param name="currentTask">Task to add the subgroup to. Must be part of this lock group.</param>
         /// <param name="newSubgroup">Subgroup to try to add to the task.</param>
+
         private void AddToLockableLock(LockHolderHelper currentTask, ThreadLockGroup newSubgroup)
         {
             //Mark this as holding other locks
@@ -131,6 +139,20 @@ namespace KejUtils.UnblockedLocks
                 currentTask.ownedSubgroups = new List<ThreadLockGroup>();
             }
             currentTask.ownedSubgroups.Add(newSubgroup);
+            //Get all related lock groups
+            ThreadLockGroup relatedGroup = newSubgroup.previousLockGroup;
+            while (relatedGroup != null)
+            {
+                currentTask.ownedSubgroups.Add(relatedGroup);
+                relatedGroup = relatedGroup.previousLockGroup;
+            }
+            relatedGroup = newSubgroup.nextLockGroup;
+            while (relatedGroup != null)
+            {
+                newSubgroup = relatedGroup; //We only want to notify the newest lock group of a thread
+                currentTask.ownedSubgroups.Add(relatedGroup);
+                relatedGroup = relatedGroup.nextLockGroup;
+            }
             //Add self to original lock owner's chain
             if (newSubgroup.groupsBorrowingThisGroup == null)
             {
@@ -138,11 +160,7 @@ namespace KejUtils.UnblockedLocks
             }
             newSubgroup.groupsBorrowingThisGroup.Add(this);
 
-            //Tell the most recent owner (before ourselves) that we're interrupting it
-            //DONE now: On second thought, makes more sense to notify all threads we're interrupting. Only the most recent
-            //task of each thread really needs to be notified.
-            //TODO: On third thought, this isn't notifying all threads yet. This should be recursive and notifying all of 
-            //groupToNotify.groupsBorrowingThisGroup also.
+            //Tell everyone that might be using this lock that we're interrupting it
             if (currentTask.notifiedTasks == null)
             {
                 currentTask.notifiedTasks = new List<LockHolderHelper>();
@@ -151,6 +169,25 @@ namespace KejUtils.UnblockedLocks
             for (int groupToNotifyIndex = newSubgroup.groupsBorrowingThisGroup.Count - 2; groupToNotifyIndex >= 0; groupToNotifyIndex--)
             {
                 ThreadLockGroup groupToNotify = newSubgroup.groupsBorrowingThisGroup[groupToNotifyIndex];
+                if (currentTask.ownedSubgroups.Contains(groupToNotify))
+                    continue;
+
+                currentTask.ownedSubgroups.Add(groupToNotify);
+                //Get all related lock groups. 
+                relatedGroup = groupToNotify.previousLockGroup;
+                while (relatedGroup != null)
+                {
+                    currentTask.ownedSubgroups.Add(relatedGroup);
+                    relatedGroup = relatedGroup.previousLockGroup;
+                }
+                relatedGroup = groupToNotify.nextLockGroup;
+                while (relatedGroup != null)
+                {
+                    groupToNotify = relatedGroup; //We only want to notify the newest lock group of a thread
+                    currentTask.ownedSubgroups.Add(relatedGroup);
+                    relatedGroup = relatedGroup.nextLockGroup;
+                }
+
                 otherTask = groupToNotify.taskQueue[^1];
                 currentTask.notifiedTasks.Add(otherTask);
                 otherTask.IgnoreInterrupt = false;
@@ -158,6 +195,7 @@ namespace KejUtils.UnblockedLocks
                 otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, otherTask, currentTask.holder, false));
                 if (!otherTask.IgnoreInterrupt) otherTask.group.wasInterrupted = true;
             }
+
             otherTask = newSubgroup.taskQueue[^1];
             currentTask.notifiedTasks.Add(otherTask);
             otherTask.IgnoreInterrupt = false;
@@ -165,6 +203,7 @@ namespace KejUtils.UnblockedLocks
             otherTask.holder.InterruptedByTask(new InterruptStruct(otherTask, otherTask, currentTask.holder, false));
             if (!otherTask.IgnoreInterrupt) otherTask.group.wasInterrupted = true;
         }
+
 
         /// <summary>
         /// Get the highest priority lock in this lock group. May fail if the lock isn't held and return null.
@@ -252,7 +291,7 @@ namespace KejUtils.UnblockedLocks
             //Check if we already have the lock
             if (otherGroup != null)
             {
-                if (this.Contains(otherGroup))
+                if (this.ContainsLocksOf(otherGroup))
                     return GetLocksStruct.AddResult.OldLock;
             }
 
@@ -280,6 +319,7 @@ namespace KejUtils.UnblockedLocks
                 {
                     this.waitingOn = otherGroup;
                 }
+
                 highestPriority ??= this.HighestPriority(taskQueue.Count);
                 int otherGroupSize;
                 ThreadLockGroup nextGroup;
@@ -291,9 +331,9 @@ namespace KejUtils.UnblockedLocks
                     nextGroup = otherGroup.waitingOn;
                     while (nextGroup == null)
                     {
-                        //Other group expired. Try to get the lock again normally.
                         if (otherGroup.taskQueue.Count == 0)
                         {
+                            //Other group expired. Try to get the lock again normally.
                             this.waitingOn = null;
                             if (wasInterrupted)
                             {
@@ -342,12 +382,29 @@ namespace KejUtils.UnblockedLocks
                         //This group is active. Continue and wait on otherGroup.
                         goto waitOnActiveThread;
                     }
-                    if (this.Contains(nextGroup))
+                    //Strictly speaking, the waitingOn chain should be recursively checked.
+                    //Everything that ContainsLocksOf checks also, eventually, is waitingOn this, so ContainsLocksOf is an
+                    //appropriate way to check the next step of the waitingOn chain (and, at the cost of iterating over
+                    //its own lists more times, may prevent some lock calls/contention from continuing the direct waitingOn
+                    //chain)
+                    if (this.ContainsLocksOf(nextGroup))
                     {
                         //There is a loop/deadlock, eventually otherGroup is waiting on this group.
-                        if (this.Contains(highestPriority.group))
+                        //TODO ish: It maybe makes more sense to delay calculating highestPriority until this point. It
+                        //should be directly calculatable from otherGroupQueue.
+                        if (this.ContainsThreadGroup(highestPriority.group))
                         {
                             //We are the highest priority thread found. We get to take a new subgroup and continue getting locks.
+
+                            //This code flow assumes highestPriority group is calculated consistently. If it isn't (because
+                            //of a bad CompareLockPriority) then it's possible for multiple threads to think they have the
+                            //highest priority task and start running at the same time, or for different ThreadLockGroups
+                            //to own eachother's locks instead of only one way. No behavior is guaranteed at that point.
+
+                            lock (otherGroup.statusMutex)
+                            {
+                                this.waitingOn = null;
+                            }
                             goto setupSubgroup;
                         }
                         //else wake up the highestPriority thread.
@@ -376,18 +433,24 @@ namespace KejUtils.UnblockedLocks
             //Code never falls into here, this requires a goto
             wakeHighestPriority:
                 //We're in a deadlock and not the highest priority thread. Make sure the highest priority thread is woken up.
-                ThreadLockGroup highestPriorityIsWaitingOn;
-                lock (highestPriority.group.statusMutex)
+                //Get that thread's wakeup signal
+                //Shouldn't need any locks since this is only read actions and the 'proper' lock for the read we care
+                //about is actually highestPriorityActiveGroup.waitingOn.statusMutex
+                ThreadLockGroup highestPriorityActiveGroup = highestPriority.group;
+                ThreadLockGroup highestPriorityActiveGroupNext = highestPriorityActiveGroup.nextLockGroup;
+                while (highestPriorityActiveGroupNext != null)
                 {
-                    //Get that thread's wakeup signal
-                    highestPriorityIsWaitingOn = highestPriority.group.waitingOn;
+                    highestPriorityActiveGroup = highestPriorityActiveGroupNext;
+                    highestPriorityActiveGroupNext = highestPriorityActiveGroup.nextLockGroup;
                 }
+
+                ThreadLockGroup highestPriorityIsWaitingOn = highestPriorityActiveGroup.waitingOn;
 
                 // If this is out of date, the highest priority thread already did stuff and we didn't need to wake it up anyways.
                 if (highestPriorityIsWaitingOn != null) lock (highestPriorityIsWaitingOn.statusMutex)
                     {
-                        // More sanity checking to make sure nothing crazy happened in between our locks
-                        if (highestPriority.group.waitingOn == highestPriorityIsWaitingOn //Group still wants the same locks
+                        // More sanity checking to make sure nothing crazy happened before our locks
+                        if (highestPriorityActiveGroup.waitingOn == highestPriorityIsWaitingOn //Group still wants the same locks
                             && highestPriority.group.taskQueue.Contains(highestPriority)) //Locks still wanted for the same reason
                         {
                             //Tell that thread to wake up and do stuff.
@@ -395,7 +458,6 @@ namespace KejUtils.UnblockedLocks
                             //instead of repeating all the lookups we just did
                             highestPriority.group.waitingOn = null;
                             Monitor.PulseAll(highestPriorityIsWaitingOn.statusMutex);
-
                         }
                         //else //there is another active thread and lots of things have been happening, so
                         //    goto waitOnActiveThread; //which is the same as fallilng through now
@@ -414,9 +476,13 @@ namespace KejUtils.UnblockedLocks
                 if (this.waitingOn == null)
                 {
                     otherGroup = resource.CurrentLock;
-                    goto setupSubgroupAlreadyCleared;
+                    goto setupSubgroup;
                 }
                 //Something else has changed, go see what has changed and if we can act now.
+                //Clearing waitingOn needs a lock on waitingOn, so first check waitingOn instead of entirely restarting.
+                //Reset some things to an appropriate state first though.
+                highestPriority = this.HighestPriority(taskQueue.Count);
+                otherGroupQueue.RemoveRange(1, otherGroupQueue.Count - 1);
                 goto checkWaitingOn;
             }
             finally //catch (Exception e)
@@ -436,17 +502,14 @@ namespace KejUtils.UnblockedLocks
             }
         //Code never falls into here, this requires a goto
         setupSubgroup:
-            lock (otherGroup.statusMutex)
-            {
-                this.waitingOn = null;
-            }
-        setupSubgroupAlreadyCleared:
             //This is the highest priority thread. Setup subgroups.
             AddToLockableLock(newLock, otherGroup);
             if (this.wasInterrupted)
             {
                 this.wasInterrupted = false;
-                if (getLocksReturns) return GetLocksStruct.AddResult.FailedToGetLock;
+                //These do look weird, considering the lock was acquired, but the thread still needs to deal with
+                //having been interrupted.
+                if (getLocksReturns) return GetLocksStruct.AddResult.TransferredLockAfterInterruption;
                 if (throwOnInterrupt)
                 {
                     throw new DeadlockResetException();
@@ -514,6 +577,7 @@ namespace KejUtils.UnblockedLocks
                     if (previousLockGroup != null)
                     {
                         previousLockGroup.waitingOn = null;
+                        previousLockGroup.nextLockGroup = null;
                     }
                     Monitor.PulseAll(statusMutex);
                     //Maybe TODO: Other memory freeing things? Since there may be stale references to LockableLockGroups
